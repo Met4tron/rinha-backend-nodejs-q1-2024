@@ -1,5 +1,5 @@
 import { Pool } from 'pg';
-import { APIError } from './errors';
+import { performance } from 'node:perf_hooks';
 
 const pool = new Pool({
 	host: process.env.DB_HOST || 'localhost',
@@ -7,153 +7,142 @@ const pool = new Pool({
 	password: process.env.DB_PASSWORD || '1234',
 	database: 'rinha_db',
 	idleTimeoutMillis: 0,
-	connectionTimeoutMillis: 60_000,
-	query_timeout: 60_0000,
 	max: parseInt(process.env.POOL_SIZE || '10'),
+	min: 10,
 });
 
 type Transaction = {
-	id: number;
 	valor: number;
-	tipo: string;
 	descricao: string;
-	id_cliente: number;
-	criada_em: Date;
+	tipo: 'c' | 'd';
 };
 
-export const getClient = async (clientId: number) => {};
+export const getClients = async () => {
+	const client = await pool.connect();
+
+	const clients = await client.query(
+		'SELECT limite FROM clientes ORDER BY id ASC',
+	);
+
+	client.release();
+
+	return clients.rows;
+};
 
 export const addTransaction = async (
 	clientId: number,
-	transaction: Omit<Transaction, 'criada_em' | 'id'>,
+	transaction: Transaction,
+	limite = 0,
 ) => {
 	if (transaction.tipo === 'c') {
-		return addCredit(clientId, transaction);
+		return addCredit(clientId, transaction, limite);
 	}
 
-	return addDebit(clientId, transaction);
+	return addDebit(clientId, transaction, limite);
 };
 
 export const addDebit = async (
 	clientId: number,
-	transaction: Omit<Transaction, 'criada_em' | 'id'>,
+	transaction: Transaction,
+	limite: number,
 ) => {
+	const start = performance.now();
 	const client = await pool.connect();
 
 	try {
-		await client.query('BEGIN');
-		await client.query("SELECT pg_advisory_xact_lock($1)", [clientId])
+		const result = await client.query('SELECT ADD_DEBIT($1, $2, $3, $4)', [
+			clientId,
+			transaction.valor,
+			transaction.descricao,
+			limite,
+		]);
 
-		const clientDb = await client.query('SELECT limite, saldo FROM clients WHERE id = $1 FOR UPDATE', [clientId])
-
-		if (!clientDb.rows.length) {
-			throw new APIError(422);
+		if (result.rows[0].add_debit === null) {
+			return null;
 		}
-
-		const newBalance = clientDb.rows[0].saldo - transaction.valor
-
-		if (newBalance < (clientDb.rows[0].limite * -1)) {
-			throw new APIError(422)
-		}
-
-		await client.query(
-			'UPDATE public.clients SET saldo = $1 WHERE id = $2',
-			[newBalance, clientId],
-		);
-
-		await client.query(
-			'INSERT INTO public.transactions (valor, tipo_transacao, descricao, id_cliente) VALUES ($1, $2, $3, $4)',
-			[transaction.valor, transaction.tipo, transaction.descricao, clientId],
-		);
-
-		await client.query('COMMIT');
 
 		return {
-			saldo: newBalance,
-			limite: clientDb.rows[0].limite
+			saldo: result.rows[0].add_debit,
+			limite: limite,
 		};
-	} catch (e) {
-		await client.query('ROLLBACK');
-		throw e;
 	} finally {
 		client.release();
+
+		console.log(
+			`Debit Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
+		);
 	}
 };
 
 export const addCredit = async (
 	clientId: number,
-	transaction: Omit<Transaction, 'criada_em' | 'id'>,
+	transaction: Transaction,
+	limite: number,
 ) => {
+	const start = performance.now();
 	const client = await pool.connect();
 
 	try {
-		await client.query('BEGIN TRANSACTION');
-		await client.query("SELECT pg_advisory_xact_lock($1)", [clientId])
+		const result = await client.query('SELECT ADD_CREDIT($1, $2, $3)', [
+			clientId,
+			transaction.valor,
+			transaction.descricao,
+		]);
 
-		const clientDb = await client.query('SELECT limite, saldo FROM clients WHERE id = $1 FOR UPDATE', [clientId])
-
-		if (!clientDb.rows.length) {
-			throw new APIError(422);
+		if (result.rows[0].add_credit === null) {
+			return null;
 		}
 
-		const newBalance = clientDb.rows[0].saldo + transaction.valor
-
-		await client.query(
-			'UPDATE public.clients SET saldo = $1 WHERE id = $2',
-			[newBalance, clientId],
-		);
-
-		await client.query(
-			'INSERT INTO transactions (valor, tipo_transacao, descricao, id_cliente) VALUES ($1, $2, $3, $4)',
-			[transaction.valor, transaction.tipo, transaction.descricao, clientId],
-		);
-
-		await client.query('COMMIT');
-
 		return {
-			saldo: newBalance,
-			limite: clientDb.rows[0].limite,
+			saldo: result.rows[0].add_credit,
+			limite: limite,
 		};
-	} catch (e) {
-		await client.query('ROLLBACK');
-		throw e;
 	} finally {
 		client.release();
+		console.log(
+			`Credit Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
+		);
 	}
 };
 
-export const getExtract = async (clientId: number) => {
+export const getExtract = async (clientId: number, limite: number) => {
+	const start = performance.now();
+
 	const client = await pool.connect();
 
 	try {
-		await client.query('BEGIN');
+		const clientDb = await client.query({
+			name: 'fetch-client',
+			text: 'SELECT saldo from clientes WHERE id = $1',
+			values: [clientId],
+			rowMode: 'array',
+		});
 
-		await client.query("SELECT pg_advisory_xact_lock($1)", [clientId])
-
-		const clientDb = await client.query(
-			'SELECT *, now() as data_extrato from clients WHERE id = $1 LIMIT 1',
-			[clientId],
-		);
-
-		if (!clientDb.rows.length) {
-			throw new APIError(404);
-		}
-
-		const transactions = await client.query(
-			'SELECT valor as total, tipo_transacao as tipo, descricao, criada_em as realizada_em from transactions WHERE id_cliente = $1 ORDER BY id DESC LIMIT 10',
-			[clientId],
-		);
-
-		await client.query('COMMIT');
+		const transactions = await client.query({
+			name: 'fetch-extract',
+			text: 'SELECT valor, tipo, descricao, realizada_em from transacoes WHERE id_cliente = $1 ORDER BY realizada_em DESC LIMIT 10',
+			values: [clientId],
+			rowMode: 'array',
+		});
 
 		return {
-			saldo: clientDb.rows[0],
-			ultimas_transacoes: transactions.rows?.[0] ?? [],
+			saldo: {
+				total: clientDb.rows[0][0],
+				data_extrato: new Date(),
+				limite: limite,
+			},
+			ultimas_transacoes: transactions.rows.map((tr) => ({
+				valor: tr[0],
+				tipo: tr[1],
+				descricao: tr[2],
+				realizada_em: tr[3],
+			})),
 		};
-	} catch (e) {
-		await client.query('ROLLBACK');
-		throw e;
 	} finally {
-		client.release();
+		console.log(
+			`Extract Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
+		);
+
+		client?.release();
 	}
 };

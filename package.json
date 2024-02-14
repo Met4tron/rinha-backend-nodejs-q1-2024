@@ -2,27 +2,29 @@
   "name": "rinha-backend-2024-q1-node",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "dev": "node --env-file .env --inspect --import tsx src/index.ts ",
-    "build": "tsup src/index.ts",
-    "format": "biome format --write ./src"
+    "dev": "node --env-file .env -r ts-node/register --inspect src/index.ts",
+    "build": "tsc",
+    "format": "biome format --write ./src",
+    "prepare": "ts-patch install && typia patch"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "fastest-validator": "^1.17.0",
-    "hyper-express": "^6.14.12",
-    "pg": "^8.11.3"
+    "@hono/node-server": "^1.7.0",
+    "async-mutex": "^0.4.1",
+    "hono": "^4.0.2",
+    "pg": "^8.11.3",
+    "typia": "^5.4.8"
   },
   "devDependencies": {
     "@biomejs/biome": "1.5.3",
     "@types/node": "^20.11.16",
     "@types/pg": "^8.11.0",
-    "tsup": "^8.0.1",
-    "tsx": "^4.7.0",
-    "typescript": "^5.3.3"
+    "ts-node": "^10.9.2",
+    "ts-patch": "^3.1.2",
+    "typescript": "^5.3.2"
   }
 }

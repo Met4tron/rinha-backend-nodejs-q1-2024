@@ -1,103 +1,144 @@
-import * as HyperExpress from 'hyper-express';
 import { cpus } from 'node:os';
 import process from 'node:process';
 import cluster from 'node:cluster';
-import Validator from 'fastest-validator';
-import { checkClient, createTransactionSchema } from './schemas';
-import { addTransaction, getExtract } from './db';
-import { APIError } from './errors';
+import { Mutex } from 'async-mutex';
+import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
+import { addTransaction, getClients, getExtract } from './db';
+import { checkId, checkTransaction, ITransaction } from './schemas';
+import { HTTPException } from 'hono/http-exception';
 
 const numCPUs = cpus().length;
+const limites = new Map();
 
 process.env.UV_THREADPOOL_SIZE = `${numCPUs}`;
 
-const v = new Validator({ haltOnFirstError: true });
+const mutex = new Mutex();
 
-const compiledSchemas = {
-	createTransactionSchema: v.compile(createTransactionSchema),
-	checkClient: v.compile(checkClient),
-};
+const server = new Hono();
 
-const server = new HyperExpress.Server({ trust_proxy: true });
+server.use('/clientes/:id/*', async (c, next) => {
+	// @ts-ignore
+	const id = c.req.param('id');
 
-server.use(async (req, res, next) => {
-	const validationResult = compiledSchemas.checkClient(req.path_parameters)
-
-	if (!validationResult || validationResult?.length) {
-		return res.status(422).json({});
+	if (Number.isNaN(id)) {
+		return c.json({}, 422);
 	}
 
-	next();
-});
-
-server.post('/clientes/:id/transacoes', async (req, res) => {
-	try {
-
-		const body = await req.json();
-
-		const validationResult = compiledSchemas.createTransactionSchema(body)
-
-		if (!validationResult || validationResult.length) {
-			return res.status(422).json({})
-		}
-		console.log({
-			valor: body.valor,
-			descricao: body.descricao,
-			tipo: body.tipo,
-			id_cliente: +req.path_parameters.id,
-		})
-		const result = await addTransaction(+req.path_parameters.id, {
-			valor: body.valor,
-			descricao: body.descricao,
-			tipo: body.tipo,
-			id_cliente: +req.path_parameters.id,
-		});
-
-		return res.status(200).json({
-			saldo: result.saldo,
-			limite: result.limite,
-		});
-	} catch (e) {
-		if (e instanceof APIError) {
-			return res.status(e.status).json({});
-		}
-		console.log(`Error - AddTransaction - ${e?.message}`);
-		return res.status(500).json({});
+	if (!checkId(id)) {
+		return c.json({}, 404);
 	}
+
+	await next();
 });
 
-server.get('/clientes/:id/extrato', async (req, res) => {
+server.post('/clientes/:id/transacoes', async (c) => {
+	console.log('Acquiring Mutex - Transaction');
+
+	const release = await mutex.acquire();
+
+	console.log('Acquire Mutex - Transaction');
 	try {
-		const { saldo, ultimas_transacoes } = await getExtract(
-			+req.path_parameters.id,
+		const body = (await c.req.json()) as ITransaction;
+		const id = +c.req.param('id');
+
+		if (!checkTransaction(body)) {
+			throw new HTTPException(422);
+		}
+
+		const result = await addTransaction(
+			id,
+			{
+				...body,
+			},
+			limites.get(id),
 		);
 
-		return res.status(200).json({
-			saldo: {
-				id: saldo.id,
-				limite: saldo.limite,
-				total: saldo.saldo,
-				data_extrato: saldo.data_extrato,
-			},
-			ultimas_transacoes: ultimas_transacoes ?? [],
-		});
-	} catch (e) {
-		if (e instanceof APIError) {
-			return res.status(e.status).json({});
+		if (!result) {
+			throw new HTTPException(422);
 		}
-		console.log(`Error - Extract - ${e?.message}`)
-		return res.status(500).json({});
+
+		return c.json(
+			{
+				saldo: result.saldo,
+				limite: result.limite,
+			},
+			200,
+		);
+	} finally {
+		console.log('Releasing Mutex - Transaction');
+		release();
 	}
 });
 
-server
-	.listen(process.env.HTTP_PORT || 3000)
-	.then((_) => {
-		console.log(`Webserver started on port ${process.env.HTTP_PORT}`);
-		console.log(`Worker ${process.pid} started`);
-	})
-	.catch((error) => {
-		console.log(error);
-		console.log(`Failed to start webserver on port ${process.env.HTTP_PORT}`);
+server.get('/clientes/:id/extrato', async (c, res) => {
+	console.log('Acquiring Mutex - Extract');
+
+	const release = await mutex.acquire();
+
+	console.log('Acquire Mutex - Extract');
+
+	try {
+		const id = +c.req.param('id');
+
+		const { saldo, ultimas_transacoes } = await getExtract(id, limites.get(id));
+
+		return c.json(
+			{
+				saldo,
+				ultimas_transacoes,
+			},
+			200,
+		);
+	} finally {
+		console.log('Releasing Mutex - Extract');
+		release();
+	}
+});
+
+server.onError((err, c) => {
+	if (err instanceof HTTPException) {
+		return err.getResponse();
+	}
+	console.log(err);
+	throw new HTTPException(500);
+});
+
+if (cluster.isPrimary) {
+	console.log(`Primary ${process.pid} is running`);
+
+	getClients().then((rows) => {
+		rows.map((c, i) => limites.set(i + 1, c.limite));
+
+		for (let i = 1; i <= 2; i++) {
+			cluster.fork();
+		}
 	});
 
+	cluster.on('exit', (worker, code, signal) => {
+		console.log(`worker ${worker.process.pid} died`);
+	});
+} else {
+	getClients()
+		.then((rows) => {
+			rows.map((c, i) => limites.set(i + 1, c.limite));
+
+			return serve({
+				fetch: server.fetch,
+				port: Number(process.env?.HTTP_PORT) ?? 3000,
+			});
+		})
+		.then((socket) =>
+			console.log(
+				`Webserver started on port ${Number(process.env?.HTTP_PORT) ?? 3000}`,
+			),
+		)
+		.catch((error) => {
+			console.log(error);
+			console.log(
+				`Failed to start webserver on port  ${
+					Number(process.env?.HTTP_PORT) ?? 3000
+				}`,
+			);
+		});
+}

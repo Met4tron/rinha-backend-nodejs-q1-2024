@@ -3,8 +3,16 @@
     "strict": true,
     "module": "commonjs",
     "target": "ES2021",
-    "sourceMap": true,
-    "esModuleInterop": true
+    "sourceMap": false,
+    "esModuleInterop": true,
+    "outDir": "dist",
+    "skipLibCheck": true,
+    "plugins": [
+      {
+        "transform": "typia/lib/transform"
+      }
+    ],
+    "strictNullChecks": true
   },
   "exclude": [
     "node_modules"
