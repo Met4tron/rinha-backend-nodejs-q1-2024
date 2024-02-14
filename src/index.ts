@@ -33,11 +33,8 @@ server.use('/clientes/:id/*', async (c, next) => {
 });
 
 server.post('/clientes/:id/transacoes', async (c) => {
-	console.log('Acquiring Mutex - Transaction');
-
 	const release = await mutex.acquire();
 
-	console.log('Acquire Mutex - Transaction');
 	try {
 		const body = (await c.req.json()) as ITransaction;
 		const id = +c.req.param('id');
@@ -66,17 +63,12 @@ server.post('/clientes/:id/transacoes', async (c) => {
 			200,
 		);
 	} finally {
-		console.log('Releasing Mutex - Transaction');
 		release();
 	}
 });
 
 server.get('/clientes/:id/extrato', async (c, res) => {
-	console.log('Acquiring Mutex - Extract');
-
 	const release = await mutex.acquire();
-
-	console.log('Acquire Mutex - Extract');
 
 	try {
 		const id = +c.req.param('id');
@@ -91,7 +83,6 @@ server.get('/clientes/:id/extrato', async (c, res) => {
 			200,
 		);
 	} finally {
-		console.log('Releasing Mutex - Extract');
 		release();
 	}
 });

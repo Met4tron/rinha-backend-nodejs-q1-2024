@@ -1,4 +1,6 @@
-ALTER DATABASE rinha_db
+-- Based on https://github.com/eupassarin/rinha2/blob/master/init.sql by https://github.com/eupassarin/rinha2
+
+ALTER DATABASE rinha_db;
 
 CREATE UNLOGGED TABLE IF NOT EXISTS clientes (id SMALLINT NOT NULL, limite INTEGER NOT NULL, saldo INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS pk_client_idx ON clientes (id) INCLUDE (saldo);

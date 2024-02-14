@@ -1,5 +1,4 @@
 import { Pool } from 'pg';
-import { performance } from 'node:perf_hooks';
 
 const pool = new Pool({
 	host: process.env.DB_HOST || 'localhost',
@@ -46,7 +45,6 @@ export const addDebit = async (
 	transaction: Transaction,
 	limite: number,
 ) => {
-	const start = performance.now();
 	const client = await pool.connect();
 
 	try {
@@ -67,10 +65,6 @@ export const addDebit = async (
 		};
 	} finally {
 		client.release();
-
-		console.log(
-			`Debit Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
-		);
 	}
 };
 
@@ -79,7 +73,6 @@ export const addCredit = async (
 	transaction: Transaction,
 	limite: number,
 ) => {
-	const start = performance.now();
 	const client = await pool.connect();
 
 	try {
@@ -99,14 +92,10 @@ export const addCredit = async (
 		};
 	} finally {
 		client.release();
-		console.log(
-			`Credit Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
-		);
 	}
 };
 
 export const getExtract = async (clientId: number, limite: number) => {
-	const start = performance.now();
 
 	const client = await pool.connect();
 
@@ -139,10 +128,6 @@ export const getExtract = async (clientId: number, limite: number) => {
 			})),
 		};
 	} finally {
-		console.log(
-			`Extract Time - ${Math.floor((performance.now() - start) / 1000)}ms`,
-		);
-
 		client?.release();
 	}
 };
