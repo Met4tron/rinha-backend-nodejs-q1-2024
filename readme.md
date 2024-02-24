@@ -1,4 +1,4 @@
-- NodeJS + Hyper Express
+- NodeJS + Hono
 - PostgresSQL
 - NGINX
 

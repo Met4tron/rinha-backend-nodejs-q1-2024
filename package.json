@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "start": "node dist/index.js",
+    "start": "NODE_ENV=production node dist/index.js",
     "dev": "node --env-file .env -r ts-node/register --inspect src/index.ts",
     "build": "tsc",
     "format": "biome format --write ./src",
